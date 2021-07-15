@@ -265,6 +265,14 @@ inherit() {
 		potential_location=""
 
 		ECLASS="$1"
+
+		if [[ ${_INHERITED_ECLASSES} =~ "\b${ECLASS}\b" ]]; then
+			# The eclass was already inherited.
+			shift
+			continue
+		fi
+		_INHERITED_ECLASSES+=" ${ECLASS}"
+
 		__export_funcs_var=__export_functions_$ECLASS_DEPTH
 		unset $__export_funcs_var
 
