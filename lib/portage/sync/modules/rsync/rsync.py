@@ -145,7 +145,7 @@ class RsyncSync(NewBase):
                 )
                 self.max_age = 0
         else:
-            self.max_age = 0
+            self.max_age = 2
 
         debug = "--debug" in opts
         if debug:

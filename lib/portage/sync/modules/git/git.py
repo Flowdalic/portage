@@ -400,6 +400,18 @@ class GitSync(NewBase):
             rev_cmd, cwd=portage._unicode_encode(self.repo.location)
         )
 
+        max_age_hours = self.repo.module_specific_options.get("sync-git-max-age-hours")
+        if max_age_hours:
+            # Check if metadata/timestmap.chk exists and if its up-to-date.
+            timestamp_chk_path = os.path.join(self.repo.location, "metadata" , "timestamp.chk")
+            if os.path.isfile(timestamp_chk_path):
+                timestamp_chk_lines = grabfile(timestamp_chk_path)
+                timestamp = time.mktime(time.strptime(timestamp_chk_lines[0], TIMESTAMP_FORMAT))
+            else:
+                # warning, sync-git-max-age-hours specified, but no
+                # metadata/timestamp.chk file in repo.
+
+
         return (os.EX_OK, current_rev != previous_rev)
 
     def verify_head(self, revision="-1") -> bool:
