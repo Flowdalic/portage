@@ -1916,15 +1916,12 @@ class Scheduler(PollScheduler):
                         level=logging.ERROR,
                     )
                 else:
-                    # Use a decaying function to take potential future PORTAGE_TMPDIR consumption
+                    # Use a function to take potential future PORTAGE_TMPDIR consumption
                     # of currently running jobs and the new job into account.
-                    def scale_to_jobs(num):
+                    def scale_to_jobs(num, p90):
                         # The newly started job is fully taken into account.
                         res = num
-                        # All currently running jobs are taken into account with less weight,
-                        # since it is likely that they are already using space in PORTAGE_TMPDIR.
-                        for i in range(2, running_job_count + 2):
-                            res += (1 / i) * num
+                        res += running_job_count * p90
                         return res
 
                     if (
@@ -1934,7 +1931,12 @@ class Scheduler(PollScheduler):
                         required_free_bytes = (
                             self._jobs_tmpdir_require_free_gb * 1024 * 1024 * 1024
                         )
-                        required_free_bytes = scale_to_jobs(required_free_bytes)
+                        p90_bytes = (
+                            1 * 1024 * 1024 * 1024
+                        )  # Assume 1 GiB for 90th percentile job size
+                        required_free_bytes = scale_to_jobs(
+                            required_free_bytes, p90_bytes
+                        )
 
                         actual_free_bytes = vfs_stat.f_bsize * vfs_stat.f_bavail
 
