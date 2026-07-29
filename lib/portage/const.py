@@ -201,6 +201,7 @@ SUPPORTED_FEATURES = frozenset(
         "keepwork",
         "lmirror",
         "merge-sync",
+        "merge-use-vdb",
         "merge-wait",
         "metadata-transfer",
         "mirror",
