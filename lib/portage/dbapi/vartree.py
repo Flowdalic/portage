@@ -5,7 +5,6 @@ __all__ = ["vardbapi", "vartree", "dblink"] + ["write_contents", "tar_contents"]
 
 import argparse
 import errno
-import filecmp
 import fnmatch
 import functools
 import gc
@@ -76,15 +75,12 @@ from ._VdbMetadataDelta import VdbMetadataDelta
 class MoveReason(Enum):
     # Falsy reasons (Move not needed)
     VDB_HASH_MATCHES = auto()
-    CONTENT_MATCHES = auto()
 
     # Truthy reasons (Move needed)
     FILE_MISSING_OR_NOT_REGULAR = auto()
     MODE_DIFFERS = auto()
     VDB_HASH_DIFFERS = auto()
-    XATTR_DIFFERS = auto()
-    CONTENT_DIFFERS = auto()
-    COMPARISON_EXCEPTION = auto()
+    CONTENT_MAYBE_DIFFERS = auto()
 
     def __bool__(self):
         return self.value >= self.__class__.FILE_MISSING_OR_NOT_REGULAR.value
@@ -6241,28 +6237,7 @@ class dblink:
                             else MoveReason.VDB_HASH_MATCHES
                         )
 
-        if "xattr" in self.settings.features:
-            excluded_xattrs = self.settings.get("PORTAGE_XATTR_EXCLUDE", "")
-            if not _cmpxattr(mysrc, mydest, exclude=excluded_xattrs):
-                return MoveReason.XATTR_DIFFERS
-
-        try:
-            files_equal = filecmp.cmp(mysrc, mydest, shallow=False)
-        except Exception as e:
-            writemsg(
-                _(
-                    "Exception '%s' happened when comparing files %s and %s, will replace the latter\n"
-                )
-                % (e, mysrc, mydest),
-                noiselevel=-1,
-            )
-            return MoveReason.COMPARISON_EXCEPTION
-
-        return (
-            MoveReason.CONTENT_DIFFERS
-            if not files_equal
-            else MoveReason.CONTENT_MATCHES
-        )
+        return MoveReason.CONTENT_MAYBE_DIFFERS
 
 
 def merge(
