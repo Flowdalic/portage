@@ -8,6 +8,7 @@ py.install_sources(
         'test_getconfig.py',
         'test_grabdict.py',
         'test_install_mask.py',
+        'test_jobserver.py',
         'test_manifest.py',
         'test_mtimedb.py',
         'test_normalizedPath.py',

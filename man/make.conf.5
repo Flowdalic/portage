@@ -768,7 +768,10 @@ packages those are.
 Merge package contents from the temporary image directory (${D}) to the
 live filesystem (${ROOT}) in parallel using a thread pool. Concurrency is
 governed by \fBPORTAGE_MERGE_JOBS\fR, falling back to the job count
-in \fBMAKEOPTS\fR (\-j), or the number of available CPUs.
+in \fBMAKEOPTS\fR (\-j), or the number of available CPUs. If a GNU Make
+jobserver (\fB\-\-jobserver\-auth=fifo:PATH\fR in \fBMAKEFLAGS\fR) is
+detected, \fBparallel\-merge\fR automatically acts as a jobserver client,
+dynamically acquiring tokens up to the configured limit.
 .TP
 .B pid\-sandbox
 Isolate the process space for the ebuild processes. This makes it

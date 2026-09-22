@@ -5362,18 +5362,30 @@ class dblink:
         merge_jobs = self._get_merge_jobs() if parallel_merge else 1
 
         if parallel_merge and merge_jobs > 1:
-            if self._parallel_mergeme(
-                srcroot,
-                destroot,
-                outfile,
-                self.settings["EPREFIX"].lstrip(os.sep),
-                cfgfiledict,
-                mymtime,
-                merge_jobs,
-            ):
-                os.umask(prevmask)
-                outfile.close()
-                return 1
+            from portage.util.jobserver import JobServerClient
+
+            jobserver = JobServerClient.from_settings(self.settings)
+            if jobserver is not None and not jobserver.open():
+                jobserver = None
+            self._jobserver_active = bool(jobserver)
+
+            try:
+                if self._parallel_mergeme(
+                    srcroot,
+                    destroot,
+                    outfile,
+                    self.settings["EPREFIX"].lstrip(os.sep),
+                    cfgfiledict,
+                    mymtime,
+                    merge_jobs,
+                    jobserver=jobserver,
+                ):
+                    os.umask(prevmask)
+                    outfile.close()
+                    return 1
+            finally:
+                if jobserver:
+                    jobserver.close()
         else:
             secondhand = []
 
@@ -5442,7 +5454,16 @@ class dblink:
 
         elapsed = time.monotonic() - start_time
         self._merge_duration = elapsed
-        jobs_str = f"{merge_jobs} jobs" if merge_jobs > 1 else "1 job"
+        if getattr(self, "_jobserver_active", False):
+            jobs_str = (
+                f"jobserver, max {merge_jobs} jobs"
+                if merge_jobs > 1
+                else "jobserver, max 1 job"
+            )
+        elif merge_jobs > 1:
+            jobs_str = f"{merge_jobs} jobs"
+        else:
+            jobs_str = "1 job"
         self._display_merge(
             _(">>> Merged package contents in %.2fs (%s)\n")
             % (elapsed, jobs_str),
@@ -6014,6 +6035,7 @@ class dblink:
         cfgfiledict,
         thismtime,
         merge_jobs,
+        jobserver=None,
     ):
         import collections
         import concurrent.futures
@@ -6146,24 +6168,31 @@ class dblink:
                 batches.append(cur_batch)
 
             def _merge_reg_batch_worker(batch):
-                batch_results = []
-                for rel_path, st in batch:
-                    res = self._merge_reg_file(
-                        srcroot,
-                        destroot,
-                        rel_path,
-                        st,
-                        thismtime,
-                        cfgfiledict_lock=cfgfiledict_lock,
-                        cfgfiledict=cfgfiledict,
-                        protect_if_modified=protect_if_modified,
-                    )
-                    batch_results.append(res)
-                    if not res[0]:
-                        break
-                return batch_results
+                token = jobserver.acquire() if jobserver else None
+                try:
+                    batch_results = []
+                    for rel_path, st in batch:
+                        res = self._merge_reg_file(
+                            srcroot,
+                            destroot,
+                            rel_path,
+                            st,
+                            thismtime,
+                            cfgfiledict_lock=cfgfiledict_lock,
+                            cfgfiledict=cfgfiledict,
+                            protect_if_modified=protect_if_modified,
+                        )
+                        batch_results.append(res)
+                        if not res[0]:
+                            break
+                    return batch_results
+                finally:
+                    if jobserver and token is not None:
+                        jobserver.release(token)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=merge_jobs) as executor:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=merge_jobs
+            ) as executor:
                 future_to_batch = {
                     executor.submit(_merge_reg_batch_worker, batch): batch
                     for batch in batches

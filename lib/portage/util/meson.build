@@ -16,6 +16,7 @@ py.install_sources(
         'hooks.py',
         'human_readable.py',
         'install_mask.py',
+        'jobserver.py',
         'lafilefixer.py',
         'listdir.py',
         'locale.py',

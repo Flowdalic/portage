@@ -261,3 +261,173 @@ src_install() {
 
         finally:
             playground.cleanup()
+
+    def testParallelMergeJobserver(self):
+        """
+        Verify that FEATURES="parallel-merge" integrates with a GNU Make
+        jobserver FIFO, acquiring/releasing tokens and falling back to the
+        implicit slot when the jobserver has 0 free tokens.
+        """
+        debug = False
+
+        content_pkg = """
+S="${WORKDIR}"
+src_install() {
+    for i in $(seq 1 10); do
+        echo "file_${i}" > "${T}"/f_${i}.txt
+    done
+    insinto /usr/share/testjobserver
+    doins "${T}"/f_*.txt
+}
+"""
+
+        ebuilds = {
+            "app-misc/jobserver-pkg-1": {
+                "EAPI": "8",
+                "KEYWORDS": "x86",
+                "LICENSE": "GPL-2",
+                "MISC_CONTENT": content_pkg,
+            },
+        }
+
+        playground = ResolverPlayground(ebuilds=ebuilds, debug=debug)
+        settings = playground.settings
+        eprefix = settings["EPREFIX"]
+        eroot = settings["EROOT"]
+        var_cache_edb = os.path.join(eprefix, "var", "cache", "edb")
+
+        portage_python = portage._python_interpreter
+        emerge_cmd = (
+            portage_python,
+            "-b",
+            "-Wd",
+            os.path.join(str(self.bindir), "emerge"),
+        )
+
+        distdir = playground.distdir
+        fake_bin = os.path.join(eprefix, "bin")
+        portage_tmpdir = os.path.join(eprefix, "var", "tmp", "portage")
+
+        path = settings.get("PATH")
+        if path is not None and not path.strip():
+            path = None
+        if path is None:
+            path = ""
+        else:
+            path = ":" + path
+        path = fake_bin + path
+
+        pythonpath = os.environ.get("PYTHONPATH")
+        if pythonpath is not None and not pythonpath.strip():
+            pythonpath = None
+        if pythonpath is not None and pythonpath.split(":")[0] == PORTAGE_PYM_PATH:
+            pass
+        else:
+            if pythonpath is None:
+                pythonpath = ""
+            else:
+                pythonpath = ":" + pythonpath
+            pythonpath = PORTAGE_PYM_PATH + pythonpath
+
+        fifo_path = os.path.join(playground.eroot, "jobserver.fifo")
+        os.mkfifo(fifo_path)
+        fifo_fd = os.open(fifo_path, os.O_RDWR | os.O_NONBLOCK)
+
+        # Seed with 2 tokens
+        os.write(fifo_fd, b"++")
+
+        env = {
+            "PORTAGE_OVERRIDE_EPREFIX": eprefix,
+            "CLEAN_DELAY": "0",
+            "DISTDIR": distdir,
+            "EMERGE_DEFAULT_OPTS": "-v",
+            "EMERGE_WARNING_DELAY": "0",
+            "PATH": path,
+            "PORTAGE_INST_GID": str(os.getgid()),
+            "PORTAGE_INST_UID": str(os.getuid()),
+            "PORTAGE_PYTHON": portage_python,
+            "PORTAGE_REPOSITORIES": settings.repositories.config_string(),
+            "PORTAGE_TMPDIR": portage_tmpdir,
+            "PYTHONDONTWRITEBYTECODE": os.environ.get("PYTHONDONTWRITEBYTECODE", "1"),
+            "PYTHONPATH": pythonpath,
+            "__PORTAGE_TEST_PATH_OVERRIDE": fake_bin,
+            "FEATURES": "parallel-merge",
+            "PORTAGE_MERGE_JOBS": "4",
+            "MAKEFLAGS": f"--jobserver-auth=fifo:{fifo_path}",
+        }
+
+        dirs = [distdir, fake_bin, portage_tmpdir, var_cache_edb]
+        true_symlinks = ["prepstrip", "scanelf"]
+        true_binary = find_binary("true")
+        self.assertEqual(true_binary is None, False, "true command not found")
+
+        try:
+            for d in dirs:
+                ensure_dirs(d)
+            for x in true_symlinks:
+                os.symlink(true_binary, os.path.join(fake_bin, x))
+            with open(os.path.join(var_cache_edb, "counter"), "wb") as f:
+                f.write(b"100")
+
+            def run_cmd(args, extra_env=None):
+                local_env = env.copy()
+                if extra_env:
+                    local_env.update(extra_env)
+
+                proc = subprocess.Popen(
+                    args, env=local_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                )
+                output = proc.stdout.readlines()
+                proc.wait()
+                proc.stdout.close()
+                if proc.returncode != os.EX_OK:
+                    import sys
+
+                    for line in output:
+                        sys.stderr.write(line.decode("utf-8", "replace"))
+
+                self.assertEqual(os.EX_OK, proc.returncode, f"cmd failed: {args}")
+                return [line.decode("utf-8", "replace") for line in output]
+
+            merge_out = run_cmd(emerge_cmd + ("-1", "=app-misc/jobserver-pkg-1"))
+            self.assertTrue(
+                any(
+                    "Merged package contents in" in line
+                    and "(jobserver, max 4 jobs)" in line
+                    for line in merge_out
+                ),
+                f"Expected '(jobserver, max 4 jobs)' in output, got: {''.join(merge_out)}",
+            )
+
+            # Verify that the 2 tokens were returned to the FIFO
+            tokens_left = os.read(fifo_fd, 10)
+            self.assertEqual(len(tokens_left), 2)
+
+            # Verify files were merged
+            for i in range(1, 11):
+                p = os.path.join(eroot, "usr", "share", "testjobserver", f"f_{i}.txt")
+                self.assertTrue(os.path.isfile(p), f"Missing file: {p}")
+
+            # Now test with 0 tokens in the FIFO (fallback to implicit slot)
+            empty_fifo_path = os.path.join(playground.eroot, "jobserver_empty.fifo")
+            os.mkfifo(empty_fifo_path)
+            empty_fd = os.open(empty_fifo_path, os.O_RDWR | os.O_NONBLOCK)
+            try:
+                env["MAKEFLAGS"] = f"--jobserver-auth=fifo:{empty_fifo_path}"
+                merge_out_empty = run_cmd(
+                    emerge_cmd + ("-1", "=app-misc/jobserver-pkg-1")
+                )
+                self.assertTrue(
+                    any(
+                        "Merged package contents in" in line
+                        and "(jobserver, max 4 jobs)" in line
+                        for line in merge_out_empty
+                    ),
+                    f"Expected '(jobserver, max 4 jobs)' with empty FIFO, got: {''.join(merge_out_empty)}",
+                )
+            finally:
+                os.close(empty_fd)
+
+        finally:
+            os.close(fifo_fd)
+            playground.cleanup()
